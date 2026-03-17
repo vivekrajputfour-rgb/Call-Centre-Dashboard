@@ -247,8 +247,7 @@ def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
          "DURATION: Extremely long call (>3 hours)")
     flag((df["dur_sec"].notna() & (df["dur_sec"] > 0) & (df["dur_sec"] < 3) & st.eq("answered")).tolist(),
          "DURATION: Answered call with <3s total duration (phantom answer)")
-    flag((st.eq("answered") & (tk < 5)).tolist(),
-         "TALK: Answered but talk time <5s (possible phantom answer)")
+    # Removed: phantom answer <5s (valid calls for this call centre)
     flag((st.isin(["missed","unanswered","abandoned"]) & (tk > 5)).tolist(),
          "TALK: Missed/Unanswered call but has talk time recorded")
     flag((st.eq("answered") & (tk == 0) & (dr > 30)).tolist(),
@@ -259,17 +258,16 @@ def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
          "CONNECTION: Customer connected but agent not connected on answered call")
     flag((st.eq("answered") & df["blank_hu"]).tolist(),
          "HANGUP: Answered call with blank Hangup By (possible network drop)")
-    flag((df["wait_sec"].notna() & (df["wait_sec"] > 600)).tolist(),
-         "WAIT: Customer waited >10 minutes in queue")
-    flag((df["aasa_sec"].notna() & (df["aasa_sec"] > 300)).tolist(),
-         "AASA: Agent answer time >5 minutes")
+    flag((df["wait_sec"].notna() & (df["wait_sec"] > 60)).tolist(),
+         "WAIT: Customer waited >1 minute in queue")
+    flag((df["aasa_sec"].notna() & (df["aasa_sec"] > 60)).tolist(),
+         "AASA: Agent answer time >1 minute")
     now = pd.Timestamp.now()
     flag((df["dt"].notna() & df["dt"].apply(lambda d: pd.Timestamp(d) > now if d else False)).tolist(),
          "DATETIME: Call timestamp is in the future")
     flag(df["dt"].isna().tolist(),
          "DATETIME: Missing/unparseable timestamp")
-    flag((df["dt"].notna() & df["dt"].apply(lambda d: d.weekday() >= 5 if d else False)).tolist(),
-         "DATETIME: Call on weekend (Saturday/Sunday)")
+    # Removed: weekend check (call centre operates Sat/Sun)
 
     df["anomaly_reasons"] = [" | ".join(r) if r else "" for r in reasons]
     df["is_anomaly"] = [bool(r) for r in reasons]
@@ -429,24 +427,55 @@ def agent_stats(df: pd.DataFrame) -> tuple:
 
 # ── Agent scoring ─────────────────────────────────────────────
 def score_agents(agt_all: pd.DataFrame) -> pd.DataFrame:
+    """
+    Score each agent 0-100 using ABSOLUTE metrics so scores genuinely
+    differ across agents and map to different salary bands.
+
+    Weights:
+      30% — Answer rate %          (absolute 0-100)
+      25% — Avg talk time          (how close to ideal 15 min)
+      20% — Both-connected %       (absolute 0-100)
+      15% — Long calls >=15m rate  (long15 / total answered * 100)
+      10% — Volume score           (answered / max_answered * 100)
+
+    Salary bands:
+      Score >= 80  → Fully Justified       → ₹35,000 (100%)
+      Score 65-79  → Mostly Justified      → ₹29,750  (85%)
+      Score 50-64  → Partially Justified   → ₹24,500  (70%)
+      Score < 50   → Needs Improvement     → ₹19,250  (55%)
+    """
     if agt_all.empty: return pd.DataFrame()
     df = agt_all.copy()
 
-    def norm(s):
-        mn, mx = s.min(), s.max()
-        if mx == mn: return pd.Series([50.0]*len(s), index=s.index)
-        return (s - mn)/(mx - mn)*100
+    # Max answered across all agents — used for volume score only
+    max_ans = max(df["_ans"].max(), 1)
 
-    ideal = 15*60
-    df["_talk_score"] = df["_avg_talk_sec"].apply(
-        lambda s: max(0, 100 - abs(s - ideal)/ideal*100) if s else 0)
+    # ── Component scores (each 0-100, absolute) ──────────────────
+    # 1. Answer rate % (already 0-100)
+    ans_score = df["_ans_rate"].clip(0, 100)
 
+    # 2. Talk time score: 100 at 15 min, tapers off both sides
+    ideal = 15 * 60  # 900 seconds
+    talk_score = df["_avg_talk_sec"].apply(
+        lambda s: max(0, 100 - abs(s - ideal) / ideal * 100) if s and s > 0 else 0)
+
+    # 3. Both-connected % (already 0-100)
+    conn_score = df["_conn_pct"].clip(0, 100)
+
+    # 4. Long calls rate: (calls>=15m / answered) * 100
+    long_rate = df.apply(
+        lambda r: min(100, (r["_t15"] / r["_ans"] * 100)) if r["_ans"] > 0 else 0, axis=1)
+
+    # 5. Volume score: answered vs best agent
+    vol_score = (df["_ans"] / max_ans * 100).clip(0, 100)
+
+    # ── Weighted total ────────────────────────────────────────────
     df["Score"] = (
-        norm(df["_ans"])        * 0.30 +
-        df["_talk_score"]       * 0.25 +
-        norm(df["_ans_rate"])   * 0.20 +
-        norm(df["_t15"])        * 0.15 +
-        norm(df["_conn_pct"])   * 0.10
+        ans_score  * 0.30 +
+        talk_score * 0.25 +
+        conn_score * 0.20 +
+        long_rate  * 0.15 +
+        vol_score  * 0.10
     ).round(1)
 
     def rating(s):
