@@ -428,55 +428,57 @@ def agent_stats(df: pd.DataFrame) -> tuple:
 # ── Agent scoring ─────────────────────────────────────────────
 def score_agents(agt_all: pd.DataFrame) -> pd.DataFrame:
     """
-    Score each agent 0-100 using ABSOLUTE metrics so scores genuinely
-    differ across agents and map to different salary bands.
+    Score each agent 0-100. Justified salary is DIRECTLY proportional
+    to the score — every point difference produces a different salary.
 
-    Weights:
-      30% — Answer rate %          (absolute 0-100)
-      25% — Avg talk time          (how close to ideal 15 min)
-      20% — Both-connected %       (absolute 0-100)
-      15% — Long calls >=15m rate  (long15 / total answered * 100)
-      10% — Volume score           (answered / max_answered * 100)
+    Formula: Justified Salary = Score/100 * SALARY_BASE
+    So score 80 → ₹28,000 | score 50 → ₹17,500 | score 20 → ₹7,000
 
-    Salary bands:
-      Score >= 80  → Fully Justified       → ₹35,000 (100%)
-      Score 65-79  → Mostly Justified      → ₹29,750  (85%)
-      Score 50-64  → Partially Justified   → ₹24,500  (70%)
-      Score < 50   → Needs Improvement     → ₹19,250  (55%)
+    Components (all relative to top performer so spread is maximised):
+      35% — Volume: answered / max_answered * 100
+      25% — Answer rate % (absolute)
+      20% — Both-connected % (absolute)
+      15% — Avg talk time (closeness to 15 min ideal)
+      5%  — Long calls >=15m (answered, normalised)
     """
     if agt_all.empty: return pd.DataFrame()
     df = agt_all.copy()
 
-    # Max answered across all agents — used for volume score only
-    max_ans = max(df["_ans"].max(), 1)
+    max_ans  = max(df["_ans"].max(), 1)
+    max_t15  = max(df["_t15"].max(), 1)
 
-    # ── Component scores (each 0-100, absolute) ──────────────────
-    # 1. Answer rate % (already 0-100)
+    # 1. Volume score — relative to best agent (0-100)
+    vol_score = (df["_ans"] / max_ans * 100).clip(0, 100)
+
+    # 2. Answer rate % — absolute (0-100)
     ans_score = df["_ans_rate"].clip(0, 100)
 
-    # 2. Talk time score: 100 at 15 min, tapers off both sides
-    ideal = 15 * 60  # 900 seconds
+    # 3. Both-connected % — absolute (0-100)
+    conn_score = df["_conn_pct"].clip(0, 100)
+
+    # 4. Talk time — closeness to 15 min ideal (0-100)
+    ideal = 15 * 60
     talk_score = df["_avg_talk_sec"].apply(
         lambda s: max(0, 100 - abs(s - ideal) / ideal * 100) if s and s > 0 else 0)
 
-    # 3. Both-connected % (already 0-100)
-    conn_score = df["_conn_pct"].clip(0, 100)
+    # 5. Long calls rate — relative (0-100)
+    long_score = (df["_t15"] / max_t15 * 100).clip(0, 100)
 
-    # 4. Long calls rate: (calls>=15m / answered) * 100
-    long_rate = df.apply(
-        lambda r: min(100, (r["_t15"] / r["_ans"] * 100)) if r["_ans"] > 0 else 0, axis=1)
-
-    # 5. Volume score: answered vs best agent
-    vol_score = (df["_ans"] / max_ans * 100).clip(0, 100)
-
-    # ── Weighted total ────────────────────────────────────────────
+    # ── Weighted Score 0-100 ──────────────────────────────────────
     df["Score"] = (
-        ans_score  * 0.30 +
-        talk_score * 0.25 +
+        vol_score  * 0.35 +
+        ans_score  * 0.25 +
         conn_score * 0.20 +
-        long_rate  * 0.15 +
-        vol_score  * 0.10
+        talk_score * 0.15 +
+        long_score * 0.05
     ).round(1)
+
+    # ── Justified salary = Score% of base salary (fully proportional) ──
+    # Every agent gets a UNIQUE salary based on their exact score
+    # Score 100 → ₹35,000 | Score 50 → ₹17,500 | Score 10 → ₹3,500
+    df["Justified Salary (₹)"] = (df["Score"] / 100 * SALARY_BASE).round(0).astype(int)
+    df["Salary Gap (₹)"]       = SALARY_BASE - df["Justified Salary (₹)"]
+    df["Salary Multiplier"]    = (df["Score"] / 100).round(2)
 
     def rating(s):
         if s >= 80: return "Fully Justified"
@@ -484,17 +486,8 @@ def score_agents(agt_all: pd.DataFrame) -> pd.DataFrame:
         if s >= 50: return "Partially Justified"
         return "Needs Improvement"
 
-    def mult(s):
-        if s >= 80: return 1.00
-        if s >= 65: return 0.85
-        if s >= 50: return 0.70
-        return 0.55
-
-    df["Rating"]              = df["Score"].apply(rating)
-    df["Salary Multiplier"]   = df["Score"].apply(mult)
-    df["Justified Salary (₹)"]= (df["Salary Multiplier"]*SALARY_BASE).round(0).astype(int)
-    df["Salary Gap (₹)"]      = SALARY_BASE - df["Justified Salary (₹)"]
-    df["Rank"]                = df["Score"].rank(ascending=False,method="min").astype(int)
+    df["Rating"] = df["Score"].apply(rating)
+    df["Rank"]   = df["Score"].rank(ascending=False, method="min").astype(int)
 
     cols = ["Rank","Agent Name","Score","Rating","Answered","Answer Rate %",
             "Avg Talk (both conn.)","Total Talk Time","Total Talk (hrs)",
