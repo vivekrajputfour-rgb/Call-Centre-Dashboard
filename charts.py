@@ -4,6 +4,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from core import SLOT_LABELS, N_SLOTS, slot_range, fmt_dur
 
+def _rgba(hex_color: str, alpha: float = 0.12) -> str:
+    """Convert '#rrggbb' hex to 'rgba(r,g,b,alpha)' string safe for Plotly."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 # ── Palette ───────────────────────────────────────────────────
 P = dict(coral="#e05c3a", blue="#2563eb", teal="#0d9488", amber="#d97706",
          green="#16a34a", red="#dc2626", purple="#7c3aed", orange="#ea580c", pink="#db2777")
@@ -65,7 +71,7 @@ def slot_single(data, color, title):
         x=SLOT_LABELS, y=arr, mode="lines+markers",
         line=dict(color=color, width=2),
         marker=dict(size=[7 if i==pi else 0 for i in range(N_SLOTS)], color=color),
-        fill="tozeroy", fillcolor=color+"18"))
+        fill="tozeroy", fillcolor=_rgba(color, 0.12)))
     if pv > 0:
         fig.add_annotation(x=SLOT_LABELS[pi], y=pv,
             text=f"<b>Peak</b><br>{slot_range(pi)}<br>{pv} calls",
@@ -236,5 +242,5 @@ def trend_line(months,vals,title,color):
     fig = go.Figure(go.Scatter(x=months,y=vals,mode="lines+markers",
         line=dict(color=color,width=2.5),
         marker=dict(size=8,color="white",line=dict(color=color,width=2.5)),
-        fill="tozeroy",fillcolor=color+"18"))
+        fill="tozeroy",fillcolor=_rgba(color, 0.12)))
     return _apply(fig,height=240,title=title,showlegend=False)
