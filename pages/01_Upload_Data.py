@@ -80,20 +80,25 @@ with col1:
                 existing = list_months()
                 for m in months_found:
                     mdf = df[df["month"] == m].copy()
+                    st.info(f"Preparing to save **{m}** — {len(mdf):,} rows…")
+
+                    do_save = False
                     if m in existing:
                         col_a, col_b = st.columns([3,1])
-                        col_a.warning(f"Month **{m}** already exists")
+                        col_a.warning(f"Month **{m}** already exists — click Replace to overwrite")
                         if col_b.button(f"Replace {m}", key=f"rep_{m}"):
-                            with st.spinner(f"Saving {m} to GitHub…"):
-                                save_month(m, mdf)
-                            st.success(f"✅ Replaced **{m}** — {len(mdf):,} rows saved permanently")
-                            st.cache_data.clear()
-                            st.rerun()
+                            do_save = True
                     else:
-                        with st.spinner(f"Saving {m} to GitHub…"):
-                            save_month(m, mdf)
-                        st.success(f"✅ Saved **{m}** — {len(mdf):,} rows saved permanently to GitHub")
-                        st.cache_data.clear()
+                        do_save = True
+
+                    if do_save:
+                        with st.spinner(f"Saving {m} to GitHub ({len(mdf):,} rows)… this may take 10–30 seconds for large files"):
+                            success = save_month(m, mdf)
+                        if success:
+                            st.success(f"✅ **{m}** saved — {len(mdf):,} rows permanently stored in GitHub")
+                            st.cache_data.clear()
+                        else:
+                            st.error(f"❌ Save failed for {m}. Check the error above and try again.")
 
             except Exception as e:
                 st.error(f"Parse error: {e}")
