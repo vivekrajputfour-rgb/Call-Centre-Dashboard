@@ -1,24 +1,38 @@
 import streamlit as st
 import pandas as pd
 from core import parse_dataframe, detect_anomalies
-from storage import save_month, list_months, delete_month, load_month
+from storage import save_month, list_months, delete_month, load_month, _github_enabled
 
 st.set_page_config(page_title="Upload Data", page_icon="📤", layout="wide")
 st.markdown("<h2 style='font-family:Playfair Display,serif'>📤 Upload Monthly Data</h2>", unsafe_allow_html=True)
 
+# ── GitHub status banner ──────────────────────────────────────
+if _github_enabled():
+    st.success("✅ **GitHub storage active** — your data is saved permanently to GitHub and will never be lost on sleep/restart.")
+else:
+    st.warning("""
+⚠️ **GitHub storage not configured** — data is stored locally and will be lost when Streamlit Cloud sleeps.
+
+**To fix this (5 min setup):**
+1. Go to **github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. Click **Generate new token** → name it anything → check **repo** scope → Generate → Copy the token
+3. Go to **share.streamlit.io → your app → Settings → Secrets** and paste:
+```toml
+[github]
+token = "ghp_paste_your_token_here"
+repo  = "vivekrajputfour-rgb/Call-Centre-Dashboard"
+branch = "main"
+```
+4. Save → app restarts → data is now permanent ✅
+""")
+
+st.divider()
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.markdown("""
-    Upload your **Knowlarity** monthly export (Excel `.xlsx` or `.csv`).  
-    The app reads the `Date and Time` column, detects the month automatically, and stores each month separately.
-    """)
+    st.markdown("Upload your **Knowlarity** monthly export (Excel `.xlsx` or `.csv`). The app detects the month from the `Date and Time` column automatically.")
 
-    uploaded = st.file_uploader(
-        "Drop your Knowlarity file here",
-        type=["xlsx", "xls", "csv"],
-        help="Supports M/D/YYYY H:MM:SS AM/PM date format"
-    )
+    uploaded = st.file_uploader("Drop your file here", type=["xlsx","xls","csv"])
 
     if uploaded:
         with st.spinner("Parsing file… this may take a moment for large files."):
@@ -55,7 +69,6 @@ with col1:
                     st.caption(
                         f"📌 Sample parse: `{sample_raw}` → "
                         f"month=**{sp.get('month','?')}**, "
-                        f"hour=**{sp.get('hour','?')}**, "
                         f"slot=**{sp.get('slot','?')}**, "
                         f"dow=**{sp.get('dow','?')}**"
                     )
@@ -69,14 +82,18 @@ with col1:
                     mdf = df[df["month"] == m].copy()
                     if m in existing:
                         col_a, col_b = st.columns([3,1])
-                        col_a.warning(f"Month **{m}** already exists ({len(load_month(m)):,} rows)")
+                        col_a.warning(f"Month **{m}** already exists")
                         if col_b.button(f"Replace {m}", key=f"rep_{m}"):
-                            save_month(m, mdf)
-                            st.success(f"Replaced {m} with {len(mdf):,} rows")
+                            with st.spinner(f"Saving {m} to GitHub…"):
+                                save_month(m, mdf)
+                            st.success(f"✅ Replaced **{m}** — {len(mdf):,} rows saved permanently")
+                            st.cache_data.clear()
                             st.rerun()
                     else:
-                        save_month(m, mdf)
-                        st.success(f"✅ Saved **{m}** — {len(mdf):,} rows")
+                        with st.spinner(f"Saving {m} to GitHub…"):
+                            save_month(m, mdf)
+                        st.success(f"✅ Saved **{m}** — {len(mdf):,} rows saved permanently to GitHub")
+                        st.cache_data.clear()
 
             except Exception as e:
                 st.error(f"Parse error: {e}")
@@ -84,6 +101,12 @@ with col1:
 
 with col2:
     st.markdown("<div class='section-title'>Stored Months</div>", unsafe_allow_html=True)
+
+    if _github_enabled():
+        st.caption("📁 Stored in your GitHub repo — permanent")
+    else:
+        st.caption("📁 Stored locally — configure GitHub to make permanent")
+
     months = list_months()
     if not months:
         st.info("No data stored yet.")
@@ -94,8 +117,12 @@ with col2:
             ca, cb = st.columns([3, 1])
             ca.metric(m, f"{r:,} rows")
             if cb.button("🗑️", key=f"del_{m}", help=f"Delete {m}"):
-                delete_month(m)
+                with st.spinner(f"Deleting {m}…"):
+                    delete_month(m)
+                st.cache_data.clear()
                 st.rerun()
 
     st.divider()
-    st.caption("Each month is stored as a `.parquet` file in the `data/` folder next to the app. Data persists between restarts.")
+    if st.button("🔄 Refresh month list"):
+        st.cache_data.clear()
+        st.rerun()
