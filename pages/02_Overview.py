@@ -16,10 +16,6 @@ if not sel: st.info("Select at least one month."); st.stop()
 
 df = load_selected(sel)
 
-if df.empty or "both_conn" not in df.columns:
-    st.error("Data could not be loaded from GitHub. Please go to **📤 Upload Data**, delete the month and re-upload your file.")
-    st.stop()
-
 k  = summary_kpis(df)
 
 # ── KPI Row 1: Volume ─────────────────────────────────────────
