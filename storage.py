@@ -75,29 +75,40 @@ def save_month(month: str, df: pd.DataFrame):
 
 def _save_github(month: str, df: pd.DataFrame):
     import requests
-    
-    # Convert df to CSV bytes
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+    # Convert df to CSV string then base64
+    csv_str   = df.to_csv(index=False)
+    csv_bytes = csv_str.encode("utf-8")
     content_b64 = base64.b64encode(csv_bytes).decode("utf-8")
-    
-    # Check if file already exists (need SHA to update)
+
+    # GitHub API has a 100MB limit per file — warn if close
+    size_mb = len(csv_bytes) / (1024 * 1024)
+    if size_mb > 90:
+        st.error(f"File too large for GitHub ({size_mb:.1f} MB). Max is ~90 MB.")
+        return
+
+    # Get SHA if file already exists (required to update existing file)
     sha = _get_sha(month)
-    
+
     payload = {
-        "message": f"data: update {month}",
+        "message": f"data: save {month} ({len(df):,} rows)",
         "content": content_b64,
-        "branch": _gh_config()[2],
+        "branch":  _gh_config()[2],
     }
     if sha:
-        payload["sha"] = sha  # required for update
-    
-    import requests
-    r = requests.put(_api_url(month), headers=_headers(), json=payload)
-    if r.status_code not in (200, 201):
-        st.error(f"GitHub save failed: {r.status_code} — {r.json().get('message','')}")
-    else:
-        # Clear cache so next load fetches fresh
-        _cached_load.clear()
+        payload["sha"] = sha
+
+    try:
+        r = requests.put(_api_url(month), headers=_headers(),
+                         json=payload, timeout=60)
+        if r.status_code not in (200, 201):
+            msg = r.json().get("message", str(r.status_code))
+            st.error(f"GitHub save failed: {msg}")
+        else:
+            _cached_load.clear()
+            list_months.clear()
+    except Exception as e:
+        st.error(f"GitHub save error: {e}")
 
 def _get_sha(month: str) -> str | None:
     """Get the SHA of an existing file (needed for GitHub updates)."""
@@ -122,19 +133,47 @@ def _cached_load(month: str) -> pd.DataFrame | None:
 
 def _load_github(month: str) -> pd.DataFrame | None:
     import requests
-    r = requests.get(_file_url(month), headers=_headers())
-    if r.status_code != 200:
+    try:
+        r = requests.get(_file_url(month), headers=_headers(), timeout=30)
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        raw_content = data.get("content", "")
+
+        # GitHub returns base64 with newlines — strip them before decoding
+        raw_content = raw_content.replace("\n", "").replace("\r", "").strip()
+
+        if not raw_content:
+            # File exists on GitHub but is empty — skip it
+            return None
+
+        csv_str = base64.b64decode(raw_content).decode("utf-8").strip()
+
+        if not csv_str or csv_str == "":
+            return None
+
+        df = pd.read_csv(io.StringIO(csv_str), low_memory=False)
+
+        if df.empty:
+            return None
+
+        if "dt" in df.columns:
+            df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
+
+        # Restore bool columns lost during CSV round-trip
+        for col in ["both_conn","cust_only","agt_only","none_conn","blank_hu",
+                    "cust_conn","agt_conn","is_anomaly"]:
+            if col in df.columns:
+                df[col] = df[col].fillna(False).astype(bool)
+
+        return df
+
+    except Exception as e:
+        # Log but don't crash — return None so app keeps working
+        import streamlit as st
+        st.warning(f"Could not load {month} from GitHub: {e}")
         return None
-    content = base64.b64decode(r.json()["content"]).decode("utf-8")
-    df = pd.read_csv(io.StringIO(content), low_memory=False)
-    if "dt" in df.columns:
-        df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-    # Restore bool columns
-    for col in ["both_conn","cust_only","agt_only","none_conn","blank_hu",
-                "cust_conn","agt_conn","is_anomaly"]:
-        if col in df.columns:
-            df[col] = df[col].astype(bool)
-    return df
 
 def load_month(month: str) -> pd.DataFrame | None:
     return _cached_load(month)
